@@ -1,0 +1,64 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* ...existing styles... */
+
+.markdown-content {
+  @apply text-gray-800;
+}
+
+.markdown-content h1,
+.markdown-content h2,
+.markdown-content h3 {
+  @apply text-gray-900 font-semibold;
+}
+
+.markdown-content p {
+  @apply my-4;
+}
+
+.markdown-content ul,
+.markdown-content ol {
+  @apply my-4 ml-6;
+}
+
+.markdown-content li {
+  @apply my-1;
+}
+
+.markdown-content pre {
+  @apply bg-gray-50 p-4 rounded-lg my-4 overflow-x-auto;
+}
+
+.markdown-content code {
+  @apply bg-gray-50 px-1 py-0.5 rounded text-sm;
+}
+
+.markdown-content blockquote {
+  @apply border-l-4 border-gray-200 pl-4 my-4 italic;
+}
+
+/* Sleek scrollbar styling */
+::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+
+::-webkit-scrollbar-track {
+  background: #f0f0f0;
+}
+
+::-webkit-scrollbar-thumb {
+  background-color: #c0c0c0;
+  border-radius: 4px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background-color: #a0a0a0;
+}
+
+/* Firefox scrollbar (optional) 
+*  scrollbar-color: #c0c0c0 #f0f0f0; 
+*  scrollbar-width: thin; 
+*/
