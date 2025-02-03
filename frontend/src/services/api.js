@@ -67,7 +67,8 @@ export const createChat = async (title, tags) => {
       throw new Error(errorData.detail || 'Failed to create chat');
     }
 
-    return response.json();
+    const chatData = await response.json();
+    return chatData;
   } catch (error) {
     console.error('Create chat error:', error);
     throw error;
@@ -294,7 +295,6 @@ export const classifyTopic = async (question, subject) => {
 };
 
 export const generateResponse = async (chatId, question, subjects) => {
-  // Extract text value if question is an array of content objects
   const questionText = Array.isArray(question) 
     ? question[0]?.value || ''
     : typeof question === 'string' 
@@ -316,5 +316,8 @@ export const generateResponse = async (chatId, question, subjects) => {
     throw new Error(error.detail || 'Failed to generate response');
   }
 
-  return response.json();
+  const responseData = await response.json();
+  // Ensure response content is properly formatted
+  responseData.response = responseData.response.replace(/```json|```/g, '');
+  return responseData;
 };

@@ -131,25 +131,20 @@ const MainChatLayout = () => {
 
   const handleStartNewChat = async ({ question, topic, knowledgeLevel, tags }) => {
     try {
-      // Create chat immediately with temporary title
       const tempTitle = `${topic} (generating title...)`;
       const newChat = await createChat(tempTitle, tags);
-      
-      // Add chat to state and set as active immediately
-      setChats(prev => [newChat, ...prev]);
+  
+      setChats(prev => {
+        const chatExists = prev.some(chat => chat.id === newChat.id);
+        return chatExists ? prev : [newChat, ...prev];
+      });
       setActiveChat(newChat);
       setIsStartChatOpen(false);
-      
-      // Clear messages for new chat
-      setMessages([]);
-
-      // Add user's question as first message
-      const userMessage = await sendMessage(newChat.id, question);
-      setMessages([userMessage]);
-
-      // Start both title and response generation in parallel
+      setMessages([{content: [
+        {type: 'text', value: question[0]?.value}
+      ]}]);
+  
       Promise.all([
-        // Generate and update title
         generateTitle(question[0]?.value || topic)
           .then(async (generatedTitle) => {
             if (generatedTitle) {
@@ -163,22 +158,28 @@ const MainChatLayout = () => {
             }
           })
           .catch(err => console.warn('Failed to generate title:', err)),
-
-        // Generate and add bot response
+  
         generateResponse(newChat.id, question[0]?.value || topic, tags)
           .then(async ({ response: botResponse }) => {
-            const botMessage = await sendMessage(newChat.id, [
-              { type: 'text', value: botResponse }
-            ], true);
-            setMessages(prev => [...prev, botMessage]);
+            const [chatMessages, chatNotes] = await Promise.all([
+              fetchChatMessages(newChat.id),
+              fetchChatNotes(newChat.id)
+            ]);
+            console.log(chatMessages)
+            setMessages(chatMessages);
+            setActiveChat({
+              ...newChat,
+              notes: chatNotes
+            });
           })
           .catch(err => console.error('Failed to generate response:', err))
-      ]).catch(console.error); // Handle any errors from Promise.all
+      ]).catch(console.error);
       
     } catch (err) {
       setError(err.message);
     }
   };
+  
 
   // Available tags for filtering
   const availableTags = ['Mathematics', 'Algebra', 'Biology', 'Cellular', 'Physics', 'Advanced'];

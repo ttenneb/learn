@@ -25,32 +25,21 @@ from schemas.pydantic_models import (
 from pydantic import BaseModel
 
 # Add these class definitions after other BaseModel classes
-from typing import List
-from pydantic import BaseModel, Field, validator
-
-# ...existing code...
-
 class ChatResponseRequest(BaseModel):
     chat_id: int
-    question: str = Field(..., min_length=1)
-    subjects: List[str] = Field(..., min_items=1)
+    question: str  # Changed from List to str
+    subjects: list[str]
 
-    @validator('subjects')
-    def validate_subjects(cls, v):
-        if not all(isinstance(s, str) for s in v):
-            raise ValueError('All subjects must be strings')
-        if not all(s.strip() for s in v):
-            raise ValueError('Subjects cannot be empty strings')
-        return v
+    class Config:
+        json_schema_extra = {
+            "example": {
+                "chat_id": 1,
+                "question": "What is Newton's First Law?",
+                "subjects": ["Physics", "Classical Mechanics"]
+            }
+        }
 
-    @validator('question')
-    def validate_question(cls, v):
-        if not v.strip():
-            raise ValueError('Question cannot be empty')
-        return v.strip()
-
-# ...existing code...
-
+# Add this with other Pydantic models at the top
 class GenerateResponseModel(BaseModel):
     response: str
 
@@ -849,10 +838,22 @@ async def generate_response(
         ).first()
         
         if not chat:
-            raise HTTPException(status_code=404, detail="Chat not found or access denied")
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Chat not found or access denied"
+            )
+
+        if not request.question or not request.subjects:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Question and subjects are required"
+            )
 
         # Use default knowledge levels for now
-        subject_knowledge = {subject: KnowledgeLevel.INTERMEDIATE for subject in request.subjects}
+        subject_knowledge = {
+            subject: KnowledgeLevel.INTERMEDIATE 
+            for subject in request.subjects
+        }
         
         # Generate response
         response = generate_chat_response(
@@ -864,19 +865,17 @@ async def generate_response(
             subject_knowledge=subject_knowledge,
             topic_knowledge={}
         )
-        
+
         return GenerateResponseModel(response=response)
     
-    except ValueError as e:
-        raise HTTPException(status_code=422, detail=str(e))
+    except HTTPException as he:
+        raise he
     except Exception as e:
-        print(f"Error generating response: {str(e)}")
+        print(f"Error generating response: {str(e)}")  # Add logging
         raise HTTPException(
-            status_code=500,
-            detail=f"Failed to generate response: {str(e)}"
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=str(e)
         )
-
-# ...existing code...
 
 if __name__ == "__main__":
     import uvicorn
