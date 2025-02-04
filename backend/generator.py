@@ -3,7 +3,7 @@ from langchain.prompts import PromptTemplate
 from langchain_core.runnables import RunnableWithMessageHistory
 from langchain_core.prompts import ChatPromptTemplate
 import json
-from typing import Dict, Any, List, Callable
+from typing import Dict, Any, List, Callable, AsyncGenerator
 from sqlalchemy.orm import Session
 from config import OPENAI_API_KEY, MODEL_NAME, TEMPERATURE
 from prompts import (
@@ -15,13 +15,16 @@ from prompts import (
 )
 from enum import Enum
 from ChatMessageHistory import PostgresChatMessageHistory
+from langchain.chains import SequentialChain
+import asyncio
 
 def create_llm():
     """Create and return a ChatOpenAI instance."""
     return ChatOpenAI(
         api_key=OPENAI_API_KEY,
         model_name=MODEL_NAME,
-        temperature=TEMPERATURE
+        temperature=TEMPERATURE,
+        streaming=True
     )
 
 def generate_subject_content(subject: str) -> Dict[str, Any]:
@@ -143,6 +146,38 @@ def classify_question_topics(question: str, subject: str, available_topics: list
         print(f"Raw response content: {response.content}")
         return []
 
+def classify_question_subtopics(question: str, subject: str, available_subtopics: list[str]) -> list[str]:
+    """
+    Classify which subtopics within a subject are most relevant to a question.
+    """
+    llm = create_llm()
+    # Use SUBTOPIC_CLASSIFICATION_PROMPT from prompts
+    from prompts import SUBTOPIC_CLASSIFICATION_PROMPT
+    prompt = PromptTemplate.from_template(SUBTOPIC_CLASSIFICATION_PROMPT)
+    
+    try:
+        formatted_prompt = prompt.format(
+            question=question,
+            subject=subject,
+            subtopics_list=", ".join(available_subtopics)
+        )
+        
+        response = llm.invoke(formatted_prompt)
+        
+        content_str = response.content.strip().replace("```json", "").replace("```", "").strip()
+        if content_str.startswith(("'", '"')):
+            content_str = content_str[1:]
+        if content_str.endswith(("'", '"')):
+            content_str = content_str[:-1]
+            
+        subtopics = json.loads(content_str)
+        valid_subtopics = [s for s in subtopics if s in available_subtopics]
+        return valid_subtopics
+    except Exception as e:
+        print(f"Error classifying subtopics: {str(e)}")
+        print(f"Raw response content: {response.content}")
+        return []
+
 def generate_title(text: str) -> str:
     """Generate a concise title (max 4 words) for a given text."""
     llm = create_llm()
@@ -180,44 +215,18 @@ class KnowledgeLevel(Enum):
         return NotImplemented
 
 def clean_llm_response(response_text: str) -> str:
-    """Clean the LLM response by removing code blocks and extract response from JSON."""
-    try:
-        # Print debug info
-        print("\nDEBUG - Raw response:")
-        print(response_text)
-        
-        # Remove code block markers if present
-        cleaned = response_text.replace("```json", "").replace("```", "").strip()
-        
-        print("\nDEBUG - After code block removal:")
-        print(cleaned)
-        
-        # Handle control characters and escape sequences
-        cleaned = cleaned.encode('utf-8').decode('unicode_escape')
-        
-        # Parse JSON with special handling for control characters
-        response_data = json.loads(cleaned, strict=False)
-        
-        print("\nDEBUG - Parsed JSON:")
-        print(response_data)
-        
-        # Extract the response field
-        if "response" in response_data:
-            return response_data["response"]
-            
-        return cleaned
-    except json.JSONDecodeError as e:
-        print(f"\nDEBUG - JSON parsing error: {str(e)}")
-        # Try alternative parsing approach
-        try:
-            # Remove any problematic control characters
-            cleaned = ''.join(char for char in cleaned if ord(char) >= 32 or char in '\n\r\t')
-            response_data = json.loads(cleaned, strict=False)
-            return response_data.get("response", cleaned)
-        except:
-            return cleaned.strip()
+    """Clean the LLM response text while preserving newlines."""
+    # Remove code block markers
+    cleaned = response_text.replace("```json", "").replace("```", "").strip()
+    
+    # Split by newlines and handle each line separately
+    lines = cleaned.split('\n')
+    # Normalize spaces within each line while preserving empty lines
+    cleaned_lines = [' '.join(line.split()) if line.strip() else '' for line in lines]
+    # Rejoin with newlines
+    return '\n'.join(cleaned_lines)
 
-def generate_chat_response(
+async def generate_chat_response(
     chat_id: int,
     db_session: Session,
     question: str,
@@ -225,10 +234,8 @@ def generate_chat_response(
     relevant_topics: Dict[str, List[str]],
     subject_knowledge: Dict[str, KnowledgeLevel],
     topic_knowledge: Dict[str, KnowledgeLevel]
-) -> str:
-    """
-    Generate a response using RunnableWithMessageHistory with knowledge level context.
-    """
+) -> AsyncGenerator[str, None]:
+    """Generate a streaming response using RunnableWithMessageHistory with knowledge level context."""
     try:
         # Get knowledge levels for relevant subjects
         relevant_knowledge_levels = {
@@ -265,20 +272,8 @@ def generate_chat_response(
             KnowledgeLevel.EXPERT: "advanced technical"
         }
 
-        # Create prompt template and format it for debugging
+        # Create prompt template
         prompt = PromptTemplate.from_template(CHAT_JSON_RESPONSE_PROMPT)
-        formatted_prompt = prompt.format(
-            knowledge_context=knowledge_context,
-            detail_level=detail_map[min_knowledge],
-            terminology_level=terminology_map[min_knowledge],
-            input=question
-        )
-        print("\nDEBUG - Templated Prompt:")
-        print("------------------------")
-        print(formatted_prompt)
-        print("------------------------\n")
-
-        # Create chain
         chain = prompt | llm
 
         # Create message history getter
@@ -293,8 +288,8 @@ def generate_chat_response(
             history_messages_key="history"
         )
 
-        # Generate response
-        response = chain_with_history.invoke(
+        # Generate streaming response
+        stream = chain_with_history.astream(
             {
                 "knowledge_context": knowledge_context,
                 "detail_level": detail_map[min_knowledge],
@@ -304,11 +299,48 @@ def generate_chat_response(
             config={"configurable": {"session_id": str(chat_id)}}
         )
 
-        # Clean and return the response content
-        if hasattr(response, 'content'):
-            return clean_llm_response(response.content)
-        return clean_llm_response(str(response))
+        # Modified streaming response handling with proper spacing and newlines
+        last_chunk_ended_with_space = False
+        buffer = ""
+        async for chunk in stream:
+            if hasattr(chunk, 'content'):
+                text = chunk.content
+            else:
+                text = str(chunk)
+            
+            buffer += text
+            
+            # Process complete lines if we have any newlines
+            if '\n' in buffer:
+                lines = buffer.split('\n')
+                # Keep the last partial line in the buffer
+                buffer = lines[-1]
+                
+                # Process all complete lines
+                for line in lines[:-1]:
+                    cleaned = clean_llm_response(line)
+                    if cleaned:
+                        yield cleaned + '\n'
+                        last_chunk_ended_with_space = False
+            
+            # Process any remaining text in buffer if it's complete
+            elif buffer.endswith(('.', '!', '?', ':', ';')):
+                cleaned = clean_llm_response(buffer)
+                if cleaned:
+                    if not last_chunk_ended_with_space and not cleaned.startswith(' '):
+                        yield ' '
+                    yield cleaned + ' '
+                    last_chunk_ended_with_space = True
+                buffer = ""
+        
+        # Process any remaining buffer at the end
+        if buffer:
+            cleaned = clean_llm_response(buffer)
+            if cleaned:
+                if not last_chunk_ended_with_space and not cleaned.startswith(' '):
+                    yield ' '
+                yield cleaned
 
     except Exception as e:
         print(f"Error generating chat response: {str(e)}")
-        return "I apologize, but I encountered an error processing your question. Please try again."
+        yield "I apologize, but I encountered an error processing your question. Please try again."

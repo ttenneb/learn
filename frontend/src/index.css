@@ -62,3 +62,12 @@
 *  scrollbar-color: #c0c0c0 #f0f0f0; 
 *  scrollbar-width: thin; 
 */
+
+/* Add these rules for dark mode LaTeX */
+.dark .katex {
+  color: inherit;
+}
+
+.dark .latex-container {
+  color: rgb(229, 231, 235); /* tailwind's gray-200 */
+}

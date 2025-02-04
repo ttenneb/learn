@@ -75,10 +75,17 @@ export const createChat = async (title, tags) => {
   }
 };
 
-export const fetchTags = async () => {
-  const response = await fetch(`${API_URL}/tags/`);
-  if (!response.ok) throw new Error('Failed to fetch tags');
-  return response.json();
+export const fetchTags = async (skip = 0, limit = 10, search = '') => {
+  const params = new URLSearchParams({ skip, limit });
+  if (search) {
+    params.append('search', search);
+  }
+  const response = await fetch(`${API_URL}/tags/?${params.toString()}`, {
+    method: 'GET',
+    headers: defaultHeaders,
+  });
+  if (!response.ok) throw new Error('Error fetching tags');
+  return await response.json();
 };
 
 export const fetchChatNotes = async (chatId) => {
@@ -266,6 +273,12 @@ export const fetchTopics = async (subjectId) => {
   return response.json();
 };
 
+export const fetchSubtopics = async (topicId) => {
+  const response = await fetch(`${API_URL}/topics/${topicId}/subtopics/`);
+  if (!response.ok) throw new Error('Failed to fetch subtopics');
+  return response.json();
+};
+
 export const classifySubject = async (question) => {
   const response = await fetch(`${API_URL}/classify-subject/`, {
     method: 'POST',
@@ -320,4 +333,42 @@ export const generateResponse = async (chatId, question, subjects) => {
   // Ensure response content is properly formatted
   responseData.response = responseData.response.replace(/```json|```/g, '');
   return responseData;
+};
+
+export const generateStreamingResponse = async (chatId, question, subjects, onChunk) => {
+  const questionText = Array.isArray(question) 
+    ? question[0]?.value || ''
+    : typeof question === 'string' 
+      ? question 
+      : question?.value || '';
+
+  const response = await fetch(`${API_URL}/generate-response/`, {
+    method: 'POST',
+    headers: defaultHeaders,
+    body: JSON.stringify({
+      chat_id: chatId,
+      question: questionText,
+      subjects: Array.isArray(subjects) ? subjects : [subjects]
+    }),
+  });
+
+  if (!response.ok) {
+    const error = await response.json();
+    throw new Error(error.detail || 'Failed to generate response');
+  }
+
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+  let accumulatedResponse = '';
+
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+
+    const chunk = decoder.decode(value, { stream: true });
+    accumulatedResponse += chunk;
+    onChunk(accumulatedResponse);
+  }
+
+  return accumulatedResponse;
 };

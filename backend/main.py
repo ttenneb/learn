@@ -1,4 +1,4 @@
-from fastapi import FastAPI, HTTPException, Depends, status, Cookie, Response, Request, BackgroundTasks
+from fastapi import FastAPI, HTTPException, Depends, status, Cookie, Response, Request, BackgroundTasks, Query  # Added Query
 from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker, Session
@@ -8,16 +8,15 @@ from jose import JWTError, jwt
 import os
 from dotenv import load_dotenv
 from datetime import datetime, timedelta
-from typing import List, Optional  # Added Optional here
-import uuid
+from typing import List, Optional, AsyncGenerator  # Added Optional and AsyncGenerator here
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from knowledge import process_empty_subjects
-from generator import classify_question_subjects, classify_question_topics, generate_title, generate_chat_response, KnowledgeLevel  # Add this import
+from generator import classify_question_subjects, classify_question_topics, generate_title, generate_chat_response, KnowledgeLevel, classify_question_subtopics  # Add this import
 from pydantic import BaseModel  # Add this if not already imported
 from contextlib import asynccontextmanager
-from models.database import Base, User, Chat, Message, KnowledgeModel, Subject, Topic
+from models.database import Base, User, Chat, Message, KnowledgeModel, Subject, Topic, Subtopic  # Added Subtopic
 from schemas.pydantic_models import (
-    UserBase, UserCreate, UserResponse, ChatBase, ChatCreate, 
+     UserCreate, UserResponse, ChatBase, 
     ChatResponse, MessageCreate, MessageResponse, Token, TokenData
 )
 
@@ -42,6 +41,20 @@ class ChatResponseRequest(BaseModel):
 # Add this with other Pydantic models at the top
 class GenerateResponseModel(BaseModel):
     response: str
+
+class SubtopicClassificationRequest(BaseModel):
+    question: str
+    subject: str
+    subtopics: list[str]
+    
+    class Config:
+        json_schema_extra = {
+            "example": {
+                "question": "How do vectors add in Euclidean space?",
+                "subject": "Mathematics",
+                "subtopics": ["Vector Addition", "Vector Subtraction", "Scalar Multiplication"]
+            }
+        }
 
 # Load environment variables
 load_dotenv()
@@ -396,16 +409,19 @@ async def get_chats(
     skip: int = 0,
     limit: int = 10,
     db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user_or_guest)  # Changed this line
+    current_user: User = Depends(get_current_user_or_guest)
 ):
-    # Get chats belonging to the current user (authenticated or guest)
+    # Get chats belonging to the current user, ordered by creation time descending
     chats = db.query(Chat).filter(
         Chat.user_id == current_user.id
-    ).offset(skip).limit(limit).all()
+    ).order_by(Chat.created_at.desc()).offset(skip).limit(limit).all()
     
     # Add last message to each chat
     for chat in chats:
-        last_message = db.query(Message).filter(Message.chat_id == chat.id).order_by(Message.created_at.desc()).first()
+        last_message = db.query(Message).filter(
+            Message.chat_id == chat.id
+        ).order_by(Message.created_at.desc()).first()
+        
         if last_message:
             text_content = next((item['value'] for item in last_message.content if item['type'] == 'text'), None)
             setattr(chat, 'lastMessage', text_content or "No text content")
@@ -480,15 +496,40 @@ async def create_message(message: MessageCreate, db: Session = Depends(get_db)):
     return db_message
 
 @app.get("/tags/")
-async def get_tags(db: Session = Depends(get_db)):
-    # Get unique tags from all chats, filtering out empty and knowledge level tags
-    chats = db.query(Chat).all()
-    tags = set()
-    knowledge_level_tags = {"beginner", "intermediate", "advanced", "expert"}
-    for chat in chats:
-        filtered_tags = {tag for tag in chat.tags if tag and tag.lower() not in knowledge_level_tags}
-        tags.update(filtered_tags)
-    return sorted(list(tags))
+async def get_tags(
+    db: Session = Depends(get_db),
+    skip: int = 0,
+    limit: int = 10,
+    search: Optional[str] = Query(None)
+):
+    # Query subjects, topics, and subtopics; filter by search if provided
+    subjects_q = db.query(Subject)
+    topics_q = db.query(Topic)
+    subtopics_q = db.query(Subtopic)
+    if search:
+        subjects_q = subjects_q.filter(Subject.name.ilike(f"%{search}%"))
+        topics_q = topics_q.filter(Topic.name.ilike(f"%{search}%"))
+        subtopics_q = subtopics_q.filter(Subtopic.name.ilike(f"%{search}%"))
+    
+    subjects = subjects_q.all()
+    topics = topics_q.all()
+    subtopics = subtopics_q.all()
+    
+    # Combine all results with type identifiers
+    tags = []
+    for subject in subjects:
+        tags.append({"id": subject.id, "name": subject.name, "type": "subject"})
+    for topic in topics:
+        tags.append({"id": topic.id, "name": topic.name, "type": "topic"})
+    for subtopic in subtopics:
+        tags.append({"id": subtopic.id, "name": subtopic.name, "type": "subtopic"})
+    
+    # Sort alphabetically and paginate
+    tags.sort(key=lambda tag: tag["name"])
+    paginated_tags = tags[skip: skip + limit]
+    total = len(tags)
+    
+    return {"total": total, "items": paginated_tags}
 
 @app.get("/chats/{chat_id}/notes")
 async def get_chat_notes(chat_id: int, db: Session = Depends(get_db)):
@@ -809,6 +850,36 @@ async def classify_topic(
             detail=f"Error classifying topics: {str(e)}"
         )
 
+@app.post("/classify-subtopic/")
+async def classify_subtopic(
+    request: SubtopicClassificationRequest,
+    db: Session = Depends(get_db)
+):
+    """Classify a question to determine relevant subtopics within a subject."""
+    try:
+        if not request.subtopics:
+            raise HTTPException(
+                status_code=400,
+                detail="Subtopics list is required"
+            )
+        
+        relevant_subtopics = classify_question_subtopics(
+            question=request.question,
+            subject=request.subject,
+            available_subtopics=request.subtopics
+        )
+        
+        return {
+            "question": request.question,
+            "subject": request.subject,
+            "relevant_subtopics": relevant_subtopics
+        }
+    except Exception as e:
+        raise HTTPException(
+            status_code=500,
+            detail=f"Error classifying subtopics: {str(e)}"
+        )
+
 @app.get("/subjects/")
 async def get_subjects(db: Session = Depends(get_db)):
     """Get all subjects."""
@@ -823,13 +894,34 @@ async def get_topics(subject_id: int, db: Session = Depends(get_db)):
         raise HTTPException(status_code=404, detail="No topics found for this subject")
     return [{"id": topic.id, "name": topic.name} for topic in topics]
 
-@app.post("/generate-response/", response_model=GenerateResponseModel)
+@app.get("/topics/{topic_id}/subtopics/")
+async def get_subtopics(topic_id: int, db: Session = Depends(get_db)):
+    """Get subtopics for a specific topic."""
+    subtopics = db.query(Subtopic).filter(Subtopic.topic_id == topic_id).all()
+    if not subtopics:
+        raise HTTPException(status_code=404, detail="No subtopics found for this topic")
+    return [{"id": subtopic.id, "name": subtopic.name} for subtopic in subtopics]
+
+from fastapi.responses import StreamingResponse
+
+async def stream_response(
+    response_generator: AsyncGenerator[str, None]
+) -> AsyncGenerator[bytes, None]:
+    """Convert the response generator to a bytes generator for streaming."""
+    try:
+        async for chunk in response_generator:
+            yield chunk.encode('utf-8')
+    except Exception as e:
+        print(f"Error in stream_response: {str(e)}")
+        yield b"Error generating response"
+
+@app.post("/generate-response/")
 async def generate_response(
     request: ChatResponseRequest,
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user_or_guest)
 ):
-    """Generate a chat response for a specific chat."""
+    """Generate a streaming chat response for a specific chat."""
     try:
         # Verify chat belongs to user
         chat = db.query(Chat).filter(
@@ -855,8 +947,8 @@ async def generate_response(
             for subject in request.subjects
         }
         
-        # Generate response
-        response = generate_chat_response(
+        # Generate streaming response
+        response_stream = generate_chat_response(
             chat_id=request.chat_id,
             db_session=db,
             question=request.question,
@@ -866,12 +958,15 @@ async def generate_response(
             topic_knowledge={}
         )
 
-        return GenerateResponseModel(response=response)
+        return StreamingResponse(
+            stream_response(response_stream),
+            media_type="text/plain",
+        )
     
     except HTTPException as he:
         raise he
     except Exception as e:
-        print(f"Error generating response: {str(e)}")  # Add logging
+        print(f"Error generating response: {str(e)}")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=str(e)
@@ -880,3 +975,4 @@ async def generate_response(
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run("main:app", host="0.0.0.0", port=8000, reload=True)
+

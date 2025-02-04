@@ -10,9 +10,10 @@ import ChatPage from './pages/ChatPage';
 import FlashcardsPage from './pages/FlashcardsPage';
 import KnowledgePage from './pages/KnowledgePage';
 import ChatList from './components/ChatList';
-import { fetchChats, fetchChatMessages, sendMessage, fetchChatNotes, createChat, generateTitle, updateChatTitle, generateResponse } from './services/api';  // Add updateChatTitle
+import { fetchChats, fetchChatMessages, sendMessage, fetchChatNotes, createChat, generateTitle, updateChatTitle, generateStreamingResponse } from './services/api';  // Add updateChatTitle
 import StartChat from './components/StartChat';
 import UserMenu from './components/UserMenu';
+import ChatMarkdown from './components/ChatMarkdown';
 
 const MainChatLayout = () => {
   // State management
@@ -59,12 +60,13 @@ const MainChatLayout = () => {
       try {
         setLoading(true);
         const chatsData = await fetchChats();
-        // Add timestamp if not present
+        // Add timestamp if not present and ensure chats are sorted by creation time
         const formattedChats = chatsData.map(chat => ({
           ...chat,
           timestamp: new Date(chat.created_at).toLocaleDateString(),
           lastMessage: chat.lastMessage || "No messages yet"
         }));
+
         setChats(formattedChats);
         
         if (formattedChats.length > 0) {
@@ -118,33 +120,92 @@ const MainChatLayout = () => {
   const handleSendMessage = async () => {
     if (!inputMessage.trim() || !activeChat) return;
 
-    const content = [{ type: 'text', value: inputMessage }];
-    
     try {
-      const newMessage = await sendMessage(activeChat.id, content, false);
-      setMessages(prev => [...prev, newMessage]);
+      // Add user message
+      const userMessage = {
+        content: [{type: 'text', value: inputMessage}],
+        is_bot: false,
+        id: Date.now() // Add temporary ID
+      };
+      
+      // Add bot's initial message with loading state
+      const botMessage = {
+        content: [{type: 'text', value: 'Thinking...'}],
+        is_bot: true,
+        id: Date.now() + 1, // Add temporary ID
+        isLoading: true  // Add loading state
+      };
+
+      setMessages(prev => [...prev, userMessage, botMessage]);
       setInputMessage('');
+
+      // Send the message to the server
+      await sendMessage(activeChat.id, userMessage.content, false);
+
+      // Start streaming the response
+      await generateStreamingResponse(
+        activeChat.id,
+        inputMessage,
+        activeChat.tags,
+        (accumulatedResponse) => {
+          setMessages(prev => prev.map(msg => 
+            msg.id === botMessage.id
+              ? { 
+                  ...msg, 
+                  content: [{type: 'text', value: accumulatedResponse}],
+                  isLoading: false  // Remove loading state after first chunk
+                }
+              : msg
+          ));
+        }
+      );
+
     } catch (err) {
       setError(err.message);
     }
   };
 
   const handleStartNewChat = async ({ question, topic, knowledgeLevel, tags }) => {
+    // Close modal immediately
+    setIsStartChatOpen(false);
+
     try {
       const tempTitle = `${topic} (generating title...)`;
       const newChat = await createChat(tempTitle, tags);
   
+      // Add the new chat to the beginning of the list
       setChats(prev => {
         const chatExists = prev.some(chat => chat.id === newChat.id);
-        return chatExists ? prev : [newChat, ...prev];
+        if (chatExists) return prev;
+        return [
+          {
+            ...newChat,
+            timestamp: new Date().toLocaleDateString(),
+            lastMessage: "No messages yet"
+          },
+          ...prev
+        ];
       });
       setActiveChat(newChat);
-      setIsStartChatOpen(false);
-      setMessages([{content: [
-        {type: 'text', value: question[0]?.value}
-      ]}]);
-  
-      Promise.all([
+
+      // Add user's question to messages
+      const userMessage = {
+        content: [{type: 'text', value: question[0]?.value}],
+        is_bot: false,
+        id: Date.now()
+      };
+      
+      const botMessage = {
+        content: [{type: 'text', value: 'Thinking...'}],
+        is_bot: true,
+        id: Date.now() + 1,
+        isLoading: true
+      };
+      
+      setMessages([userMessage, botMessage]);
+
+      // Handle title generation and response streaming in parallel
+      await Promise.all([
         generateTitle(question[0]?.value || topic)
           .then(async (generatedTitle) => {
             if (generatedTitle) {
@@ -159,27 +220,28 @@ const MainChatLayout = () => {
           })
           .catch(err => console.warn('Failed to generate title:', err)),
   
-        generateResponse(newChat.id, question[0]?.value || topic, tags)
-          .then(async ({ response: botResponse }) => {
-            const [chatMessages, chatNotes] = await Promise.all([
-              fetchChatMessages(newChat.id),
-              fetchChatNotes(newChat.id)
-            ]);
-            console.log(chatMessages)
-            setMessages(chatMessages);
-            setActiveChat({
-              ...newChat,
-              notes: chatNotes
-            });
-          })
-          .catch(err => console.error('Failed to generate response:', err))
-      ]).catch(console.error);
+        generateStreamingResponse(
+          newChat.id,
+          question[0]?.value || topic,
+          tags,
+          (accumulatedResponse) => {
+            setMessages(prev => prev.map(msg => 
+              msg.id === botMessage.id
+                ? { 
+                    ...msg, 
+                    content: [{type: 'text', value: accumulatedResponse}],
+                    isLoading: false  // Remove loading state after first chunk
+                  }
+                : msg
+            ));
+          }
+        ).catch(err => console.error('Failed to generate response:', err))
+      ]);
       
     } catch (err) {
       setError(err.message);
     }
   };
-  
 
   // Available tags for filtering
   const availableTags = ['Mathematics', 'Algebra', 'Biology', 'Cellular', 'Physics', 'Advanced'];
@@ -215,42 +277,54 @@ const MainChatLayout = () => {
         <div className="h-px w-full bg-gray-200 my-3" />
 
         {/* Content */}
-        <div className="text-gray-800 space-y-4">
-          {message.content.map((item, index) => {
-            switch (item.type) {
-              case 'latex':
-                return (
-                  <div key={index} className={`latex-container ${item.value.startsWith('$$') ? 'flex justify-center' : ''}`}>
-                    <Latex>{item.value}</Latex>
-                  </div>
-                );
-              case 'video':
-                return (
-                  <div key={index} className="relative w-full" style={{ paddingBottom: '56.25%' }}>
-                    <YouTube
-                      videoId={item.value}
-                      opts={{
-                        height: '100%',
-                        width: '100%',
-                        playerVars: { 
-                          autoplay: 0,
-                          controls: 1,
-                          modestbranding: 1,
-                          rel: 0
-                        },
-                      }}
-                      iframeClassName="absolute top-0 left-0 w-full h-full rounded-lg"
-                      className="absolute top-0 left-0 w-full h-full"
+        <div className="text-gray-800 dark:text-gray-200 space-y-4"> {/* Add dark:text-gray-200 here */}
+          {message.isLoading ? (
+            <div className="flex items-center space-x-2 text-gray-500">
+              <div className="w-2 h-2 bg-blue-500 rounded-full animate-bounce" style={{ animationDelay: '0ms' }}></div>
+              <div className="w-2 h-2 bg-blue-500 rounded-full animate-bounce" style={{ animationDelay: '150ms' }}></div>
+              <div className="w-2 h-2 bg-blue-500 rounded-full animate-bounce" style={{ animationDelay: '300ms' }}></div>
+            </div>
+          ) : (
+            message.content.map((item, index) => {
+              switch (item.type) {
+                case 'latex':
+                  return (
+                    <div key={index} className={`latex-container ${item.value.startsWith('$$') ? 'flex justify-center' : ''} dark:text-gray-200`}>
+                      <Latex>{item.value}</Latex>
+                    </div>
+                  );
+                case 'video':
+                  return (
+                    <div key={index} className="relative w-full" style={{ paddingBottom: '56.25%' }}>
+                      <YouTube
+                        videoId={item.value}
+                        opts={{
+                          height: '100%',
+                          width: '100%',
+                          playerVars: { 
+                            autoplay: 0,
+                            controls: 1,
+                            modestbranding: 1,
+                            rel: 0
+                          },
+                        }}
+                        iframeClassName="absolute top-0 left-0 w-full h-full rounded-lg"
+                        className="absolute top-0 left-0 w-full h-full"
+                      />
+                    </div>
+                  );
+                case 'text':
+                default:
+                  return (
+                    <ChatMarkdown 
+                      key={index} 
+                      content={item.value}
+                      className="dark:text-gray-200" // Add this line
                     />
-                  </div>
-                );
-              case 'text':
-              default:
-                return (
-                  <p key={index} className="text-lg leading-relaxed">{item.value}</p>
-                );
-            }
-          })}
+                  );
+              }
+            })
+          )}
         </div>
       </div>
     );

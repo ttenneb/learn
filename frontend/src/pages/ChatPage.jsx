@@ -14,8 +14,7 @@ const ChatPage = () => {
     handleSendMessage,
     inputMessage,
     setInputMessage,
-    isFormattingToolbarOpen,
-    setIsFormattingToolbarOpen,
+    renderMessageContent,
     activeChat,
     isSidebarOpen
   } = useOutletContext();
@@ -35,6 +34,7 @@ const ChatPage = () => {
   const [markdownWidth, setMarkdownWidth] = useState(calculateInitialWidth());
   const [isMarkdownVisible, setIsMarkdownVisible] = useState(true);
   const [previousWidth, setPreviousWidth] = useState(null);
+  const [isFormattingToolbarOpen, setIsFormattingToolbarOpen] = useState(false);
 
   // Handle markdown toggle
   const toggleMarkdown = () => {
@@ -53,68 +53,6 @@ const ChatPage = () => {
     window.addEventListener('resize', handleResize);
     return () => window.removeEventListener('resize', handleResize);
   }, [markdownWidth]);
-
-  const renderContent = (content) => {
-    return content.map((item, index) => {
-      switch (item.type) {
-        case 'latex':
-          return (
-            <div key={index} className={`latex-container dark:text-gray-200 ${
-              item.value.startsWith('$$') ? 'flex justify-center' : ''
-            }`}>
-              <Latex>{item.value}</Latex>
-            </div>
-          );
-        case 'video':
-          return <YouTubeEmbed key={index} videoId={item.value} />;
-        case 'text':
-        default:
-          return <p key={index} className="text-lg leading-relaxed text-gray-800 dark:text-gray-200">{item.value}</p>;
-      }
-    });
-  };
-
-  const renderChatMessage = (message) => {
-    const MessageIcon = message.is_bot ? RiRobot2Line : RiUser3Line;
-    
-    return (
-      <div className="w-full">
-        <div className={`flex ${message.is_bot ? 'justify-start' : 'justify-end'}`}>
-          <div className={`w-full ${message.is_bot ? '' : 'flex flex-col items-end'}`}>
-            {/* Icon wrapper - shown for both bot and user */}
-            <div className={`flex items-start gap-3 mb-2 ${message.is_bot ? '' : 'flex-row-reverse'}`}>
-              <div className={`w-8 h-8 rounded-full flex items-center justify-center 
-                ${message.is_bot ? 'bg-blue-100 dark:bg-blue-900/30' : 'bg-gray-100 dark:bg-gray-800'}`}>
-                <MessageIcon className={`w-5 h-5 ${
-                  message.is_bot ? 'text-blue-600 dark:text-blue-400' : 'text-gray-600 dark:text-gray-400'
-                }`} />
-              </div>
-            </div>
-
-            {/* Bot-specific controls */}
-            {message.is_bot && (
-              <div className="flex items-center gap-3 mb-2 text-gray-400 dark:text-gray-500">
-                <button className="hover:text-gray-600 dark:hover:text-gray-300 transition-colors">
-                  <FiRefreshCw className="w-4 h-4" />
-                </button>
-                <button className="hover:text-gray-600 dark:hover:text-gray-300 transition-colors">
-                  <FiSettings className="w-4 h-4" />
-                </button>
-              </div>
-            )}
-
-            {/* Separator line for both types */}
-            <div className="h-px w-full bg-gray-200 dark:bg-gray-700 my-3" />
-
-            {/* Message content */}
-            <div className={`space-y-4 ${message.is_bot ? '' : 'text-right'}`}>
-              {renderContent(message.content)}
-            </div>
-          </div>
-        </div>
-      </div>
-    );
-  };
 
   // Handle input change with dynamic height adjustment
   const handleInputChange = (e) => {
@@ -259,9 +197,12 @@ const ChatPage = () => {
       <div className="flex-1 flex flex-col bg-white dark:bg-gray-900 relative pt-[73px]">
         <div className="flex-1 px-6 pb-24"> {/* Added pb-24 to prevent overlap with fixed input */}
           <div className="max-w-4xl mx-auto py-6 space-y-8">
-            {messages.map((message) => (
-              <div key={message.id} className="w-full">
-                {renderChatMessage(message)}
+            {messages?.map((message, index) => (
+              <div key={`${message.id || index}-${Date.now()}`} className="flex justify-center">
+                {renderMessageContent({
+                  content: message.content || [{type: 'text', value: ''}],
+                  isBot: message.is_bot
+                })}
               </div>
             ))}
             <div ref={messagesEndRef} />

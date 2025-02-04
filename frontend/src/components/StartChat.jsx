@@ -18,6 +18,7 @@ const StartChat = ({ onClose, onSubmit }) => {
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState(null);
   const [isClassifying, setIsClassifying] = useState(false);
+  const [isSubmitting, setIsSubmitting] = useState(false);
   const modalRef = useRef(null);
   const textareaRef = useRef(null);
   const dropdownRef = useRef(null);
@@ -200,9 +201,12 @@ const StartChat = ({ onClose, onSubmit }) => {
     setTags(tags.filter(tag => tag !== tagToRemove));
   };
 
-  const handleSubmit = (e) => {
+  const handleSubmit = async (e) => {
     e.preventDefault();
-    onSubmit({ 
+    if (isSubmitting) return; // Prevent multiple submissions
+    
+    setIsSubmitting(true);
+    await onSubmit({ 
       question: [{ type: 'text', value: question }],
       topic: tags[0] || 'General',
       knowledgeLevel,
@@ -278,6 +282,13 @@ const StartChat = ({ onClose, onSubmit }) => {
               </div>
             </div>
           </div>
+
+          {/* Knowledge Level Section */}
+          <KnowledgeSlider
+            value={knowledgeLevel}
+            onChange={setKnowledgeLevel}
+            maxAllowed={80}
+          />
 
           {/* Topics Section */}
           <div className="space-y-2">
@@ -374,26 +385,19 @@ const StartChat = ({ onClose, onSubmit }) => {
             </div>
           </div>
 
-          {/* Knowledge Level Section */}
-          <KnowledgeSlider
-            value={knowledgeLevel}
-            onChange={setKnowledgeLevel}
-            maxAllowed={80}
-          />
-
           {/* Submit Button */}
           <div className="flex justify-end pt-4">
             <button
               type="submit"
-              disabled={!question.trim() || tags.length === 0}
+              disabled={!question.trim() || tags.length === 0 || isSubmitting}
               className={`px-4 py-2 rounded-lg transition-colors flex items-center gap-2 ${
-                question.trim() && tags.length > 0
+                question.trim() && tags.length > 0 && !isSubmitting
                   ? 'bg-blue-500 hover:bg-blue-600 text-white'
                   : 'bg-gray-100 dark:bg-gray-700 text-gray-400 dark:text-gray-500 cursor-not-allowed'
               }`}
             >
               <FiSend className="w-5 h-5" />
-              <span>Start Lecture</span>
+              <span>{isSubmitting ? 'Starting...' : 'Start Lecture'}</span>
             </button>
           </div>
         </form>
